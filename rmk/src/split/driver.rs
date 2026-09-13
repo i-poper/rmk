@@ -75,7 +75,18 @@ fn update_slot(id: usize, f: impl FnOnce(&mut PeripheralSlot)) -> bool {
 
 /// Latch peripheral `id`'s connected state and broadcast the change.
 pub(crate) fn set_peripheral_connected(id: usize, connected: bool) {
-    if update_slot(id, |s| s.connected = connected) {
+    if update_slot(id, |s| {
+        #[cfg(feature = "keyboard_system_status")]
+        if s.connected != connected {
+            // A value belongs to one split session only. Do not expose a
+            // previous session's battery while the new session is waiting for
+            // its first report.
+            s.battery = BatteryStatus::Unavailable;
+        }
+        s.connected = connected;
+    }) {
+        #[cfg(feature = "keyboard_system_status")]
+        crate::ble::keyboard_system_status::notify_status_changed();
         publish_event(PeripheralConnectedEvent { id, connected });
     }
 }
@@ -84,6 +95,8 @@ pub(crate) fn set_peripheral_connected(id: usize, connected: bool) {
 #[cfg(feature = "_ble")]
 pub(crate) fn set_peripheral_battery(id: usize, battery: BatteryStatus) {
     if update_slot(id, |s| s.battery = battery) {
+        #[cfg(feature = "keyboard_system_status")]
+        crate::ble::keyboard_system_status::notify_status_changed();
         publish_event(PeripheralBatteryEvent {
             id,
             state: BatteryStatusEvent(battery),
@@ -95,6 +108,21 @@ pub(crate) fn set_peripheral_battery(id: usize, battery: BatteryStatus) {
 #[cfg(feature = "_ble")]
 pub(crate) fn current_peripheral_battery_status(id: usize) -> Option<BatteryStatus> {
     PERIPHERAL_SLOTS.lock(|slots| slots.get().get(id).map(|slot| slot.battery))
+}
+
+/// Latest battery status for a currently connected peripheral.
+///
+/// Unlike `current_peripheral_battery_status`, this never exposes a stale
+/// battery value after the peripheral disconnects.
+#[cfg(all(feature = "_ble", feature = "keyboard_system_status"))]
+pub(crate) fn current_connected_peripheral_battery_status(id: usize) -> Option<BatteryStatus> {
+    PERIPHERAL_SLOTS.lock(|slots| {
+        slots
+            .get()
+            .get(id)
+            .filter(|slot| slot.connected)
+            .map(|slot| slot.battery)
+    })
 }
 
 /// Latest snapshot for peripheral `id`, or `None` when `id` is out of range.

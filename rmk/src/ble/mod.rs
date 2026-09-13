@@ -3,6 +3,8 @@ use bt_hci::cmd::le::LeSubrateRequest;
 use bt_hci::cmd::le::{LeReadLocalSupportedFeatures, LeSetPhy};
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::Error as HciError;
+#[cfg(feature = "keyboard_system_status")]
+use embassy_futures::join::join;
 use embassy_futures::join::{join3, join4};
 use embassy_futures::select::{Either, Either3, select, select3};
 #[cfg(feature = "split")]
@@ -46,6 +48,8 @@ pub(crate) mod ble_server;
 pub(crate) mod device_info;
 #[cfg(feature = "host")]
 pub(crate) mod host;
+#[cfg(feature = "keyboard_system_status")]
+pub mod keyboard_system_status;
 pub(crate) mod led;
 #[cfg(feature = "_nrf_ble")]
 pub(crate) mod nrf;
@@ -256,6 +260,8 @@ async fn run_ble_keyboard<
             &heapless::String::try_from(device_config.manufacturer).unwrap(),
         )
         .unwrap();
+    #[cfg(feature = "keyboard_system_status")]
+    keyboard_system_status::initialize_server(&server);
     let server = &server;
 
     if crate::ble::passkey::passkey_entry_enabled() {
@@ -544,6 +550,16 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                             || event.handle() == system_control.cccd_handle.expect("No CCCD for system report")
                             || event.handle() == level.cccd_handle.expect("No CCCD for battery level")
                             || {
+                                #[cfg(feature = "keyboard_system_status")]
+                                {
+                                    keyboard_system_status::is_cccd_handle(server, event.handle())
+                                }
+                                #[cfg(not(feature = "keyboard_system_status"))]
+                                {
+                                    false
+                                }
+                            }
+                            || {
                                 #[cfg(feature = "split")]
                                 {
                                     peripheral_levels.iter().any(|level| {
@@ -793,6 +809,9 @@ async fn serve_keyboard_connection<
     let mut ble_peripheral_battery_server = crate::SPLIT_BATTERY_PERIPHERAL_IDS
         .first()
         .map(|_| BlePeripheralBatteryServer::new(server, conn));
+    #[cfg(feature = "keyboard_system_status")]
+    let mut keyboard_system_status_server =
+        keyboard_system_status::BleKeyboardSystemStatusServer::new(server, conn);
 
     // CCCD lookup uses cached bond info to avoid a cancellable flash read while
     // this future is racing other arms of an outer `select`.
@@ -873,6 +892,12 @@ async fn serve_keyboard_connection<
     #[cfg(not(all(feature = "dongle", feature = "host")))]
     let dongle_event_task = core::future::pending::<()>();
 
+    #[cfg(feature = "keyboard_system_status")]
+    let inner = join(
+        join4(writer_task, led_task, host_task, dongle_event_task),
+        keyboard_system_status_server.run(),
+    );
+    #[cfg(not(feature = "keyboard_system_status"))]
     let inner = join4(writer_task, led_task, host_task, dongle_event_task);
     select(communication_task, inner).await;
 }

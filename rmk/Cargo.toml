@@ -133,6 +133,13 @@ dfu_lock = ["host_lock"]
 ## Vial lock).
 host_lock = []
 
+## Enable the vendor-specific Keyboard System Status Service.
+## Node roles and battery sources are supplied by the keyboard application.
+keyboard_system_status = ["_ble", "layer_state"]
+
+## Expose a protocol-independent snapshot of the default and active layers.
+layer_state = []
+
 ## **Experimental.** Enable Rynk protocol support (RMK-native protocol, mutually exclusive with
 ## vial). The wire protocol and host API can change in any release; `vial` is the stable default.
 ## Includes `host_lock` so the lock gate always has matrix-state tracking.
