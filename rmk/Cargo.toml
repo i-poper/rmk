@@ -11,8 +11,8 @@ license = "MIT OR Apache-2.0"
 resolver = "2"
 
 [dependencies]
-rmk-macro = { version = "=0.8.0", path = "../rmk-macro" }
-rmk-types = { version = "=0.4.0", path = "../rmk-types" }
+rmk-macro = { version = "=0.8.0" }
+rmk-types = { version = "=0.4.0" }
 embedded-hal = { version = "1.0.0" }
 embedded-hal-async = { version = "1.0.0" }
 embedded-io-async = { version = "0.7" }
@@ -94,7 +94,7 @@ embassy-usb-dfu = { version = "0.3.0", optional = true, features = ["cortex-m", 
 # A hack for enabling 'std' feature in testing, ref: https://github.com/rust-lang/cargo/issues/2911
 rmk = { path = ".", default-features = false, features = ["std", "log"] }
 # Same unification hack: turn on the `run_tests!` scenario macro for tests only
-rmk-macro = { path = "../rmk-macro", features = ["_simulator"] }
+rmk-macro = { version = "=0.8.0", features = ["_simulator"] }
 critical-section = { version = "1.2", features = ["std"] }
 embedded-hal-mock = { version = "0.11.1", features = ["embedded-hal-async"] }
 # Scenario files spell Rynk payloads as data; `run_tests!` forwards them as JSON
