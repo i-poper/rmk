@@ -119,8 +119,8 @@ impl BatteryProcessor {
     fn commit(&mut self, status: BatteryStatus) {
         self.battery_status = status;
         BATTERY_STATUS.lock(|c| c.set(status));
-        #[cfg(feature = "keyboard_system_status")]
-        crate::ble::keyboard_system_status::notify_status_changed();
+        #[cfg(feature = "battery_state")]
+        crate::state::notify_battery_state_changed();
         publish_event(BatteryStatusEvent::from(status));
     }
 

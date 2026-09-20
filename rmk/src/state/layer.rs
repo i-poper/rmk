@@ -5,17 +5,19 @@ use embassy_sync::signal::Signal;
 
 use crate::RawMutex;
 
-/// Maximum number of layers representable by [`LayerStateSnapshot`].
+/// Maximum number of layers represented in [`LayerStateSnapshot`]'s bitmap.
 pub const MAX_LAYER_STATE_LAYERS: usize = u8::MAX as usize + 1;
 
 /// Protocol-independent snapshot of the keymap's effective layer state.
 ///
 /// The default layer is always included in `active_bitmap`, even though RMK
 /// stores momentary/toggled activation separately from the default layer.
+/// For keymaps larger than 256 layers, the bitmap contains the first 256;
+/// callers can compare `layer_count()` with [`MAX_LAYER_STATE_LAYERS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerStateSnapshot {
     default_layer: u8,
-    layer_count: u16,
+    layer_count: usize,
     active_bitmap: [u8; MAX_LAYER_STATE_LAYERS / 8],
 }
 
@@ -31,7 +33,7 @@ impl LayerStateSnapshot {
     }
 
     pub fn layer_count(self) -> usize {
-        self.layer_count as usize
+        self.layer_count
     }
 
     pub fn is_active(&self, layer: u8) -> bool {
@@ -44,24 +46,19 @@ impl LayerStateSnapshot {
     }
 
     pub(crate) fn from_keymap(default_layer: u8, layer_state: &[bool]) -> Self {
-        assert!(
-            !layer_state.is_empty() && layer_state.len() <= MAX_LAYER_STATE_LAYERS,
-            "RMK layer state must contain between 1 and 256 layers"
-        );
-        assert!(
-            usize::from(default_layer) < layer_state.len(),
-            "default layer must be within the configured layer range"
-        );
+        if layer_state.is_empty() || usize::from(default_layer) >= layer_state.len() {
+            return Self::EMPTY;
+        }
 
         let mut active_bitmap = [0; MAX_LAYER_STATE_LAYERS / 8];
-        for (layer, active) in layer_state.iter().copied().enumerate() {
+        for (layer, active) in layer_state.iter().copied().take(MAX_LAYER_STATE_LAYERS).enumerate() {
             if active || layer == usize::from(default_layer) {
                 active_bitmap[layer / 8] |= 1 << (layer % 8);
             }
         }
         Self {
             default_layer,
-            layer_count: layer_state.len() as u16,
+            layer_count: layer_state.len(),
             active_bitmap,
         }
     }
@@ -125,6 +122,24 @@ mod tests {
         assert!(state.is_active(17));
         assert!(state.is_active(255));
         assert!(!state.is_active(2));
+    }
+
+    #[test]
+    fn oversized_keymap_preserves_low_layers_without_panicking() {
+        let mut layers = [false; 257];
+        layers[1] = true;
+        layers[256] = true;
+
+        let state = LayerStateSnapshot::from_keymap(0, &layers);
+        assert_eq!(state.layer_count(), 257);
+        assert!(state.is_active(0));
+        assert!(state.is_active(1));
+    }
+
+    #[test]
+    fn invalid_keymap_snapshot_is_unavailable() {
+        assert_eq!(LayerStateSnapshot::from_keymap(0, &[]).layer_count(), 0);
+        assert_eq!(LayerStateSnapshot::from_keymap(2, &[false, false]).layer_count(), 0);
     }
 
     #[test]

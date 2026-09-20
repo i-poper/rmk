@@ -8,7 +8,6 @@ use core::cell::RefCell;
 
 use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::signal::Signal;
 use heapless::Vec;
 use rmk_types::battery::BatteryStatus;
 use trouble_host::prelude::*;
@@ -26,6 +25,7 @@ pub const LAYER_STATUS_UUID: u128 = 0x68777b88_895f_4d13_b433_adb93a243c6b;
 
 const VERSION_MAJOR: u8 = 1;
 const VERSION_MINOR: u8 = 0;
+const INVALID_LAYER_STATUS: [u8; 5] = [0; 5];
 
 /// A node's role in the keyboard system status protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,22 +115,21 @@ impl KeyboardSystemStatusConfig {
 
 static CONFIG: Mutex<crate::RawMutex, RefCell<Option<KeyboardSystemStatusConfig>>> =
     Mutex::new(RefCell::new(None));
-static STATUS_CHANGED: Signal<crate::RawMutex, ()> = Signal::new();
-
-pub(crate) fn notify_status_changed() {
-    STATUS_CHANGED.signal(());
-}
 
 fn install_config(config: KeyboardSystemStatusConfig) {
-    CONFIG.lock(|slot| {
+    let installed = CONFIG.lock(|slot| {
         let mut slot = slot.borrow_mut();
-        assert!(
-            slot.is_none(),
-            "Keyboard System Status config installed more than once"
-        );
+        if slot.is_some() {
+            return false;
+        }
         *slot = Some(config);
+        true
     });
-    STATUS_CHANGED.signal(());
+    if installed {
+        crate::state::notify_battery_state_changed();
+    } else {
+        error!("Keyboard System Status config installed more than once");
+    }
 }
 
 fn with_config<T>(f: impl FnOnce(&KeyboardSystemStatusConfig) -> T) -> Option<T> {
@@ -188,33 +187,22 @@ fn node_status() -> Vec<u8, MAX_NODES> {
     .unwrap_or_default()
 }
 
-fn layer_status() -> [u8; 5] {
+fn layer_status() -> Option<[u8; 5]> {
     encode_layer_status(crate::state::current_layer_state())
 }
 
-fn encode_layer_status(state: crate::state::LayerStateSnapshot) -> [u8; 5] {
-    assert!(
-        state.layer_count() <= 32,
-        "Keyboard System Status v1 supports at most 32 layers"
-    );
-    assert!(
-        state.default_layer() < 32,
-        "Default layer must fit the v1 layer bitmap"
-    );
+fn encode_layer_status(state: crate::state::LayerStateSnapshot) -> Option<[u8; 5]> {
+    if state.layer_count() == 0 || state.default_layer() >= 32 {
+        return None;
+    }
     let bitmap = state.active_bitmap();
-    [
-        state.default_layer(),
-        bitmap[0],
-        bitmap[1],
-        bitmap[2],
-        bitmap[3],
-    ]
+    Some([state.default_layer(), bitmap[0], bitmap[1], bitmap[2], bitmap[3]])
 }
 
 /// Startup processor that installs the application-provided node config.
 ///
-/// Battery and split drivers signal changes directly, so this task consumes no
-/// event subscriber slots after initialization.
+/// Battery and split drivers signal changes through the protocol-independent
+/// state API, so this task consumes no event subscriber slots.
 pub struct KeyboardSystemStatusProcessor;
 
 impl KeyboardSystemStatusProcessor {
@@ -280,7 +268,7 @@ pub(crate) fn initialize_server(server: &Server) {
     }
     if let Err(e) = server.set(
         &server.keyboard_system_status_service.layer_status,
-        &layer_status(),
+        &layer_status().unwrap_or(INVALID_LAYER_STATUS),
     ) {
         error!("Failed to initialize Layer Status: {:?}", e);
     }
@@ -301,18 +289,19 @@ pub(crate) fn is_cccd_handle(server: &Server, handle: u16) -> bool {
                 .expect("No CCCD for Layer Status")
 }
 
-pub(crate) struct BleKeyboardSystemStatusServer<'stack, 'server, 'conn, P: PacketPool> {
+pub(crate) struct BleKeyboardSystemStatusServer<'stack, 'server, 'table, 'conn, P: PacketPool> {
+    server: &'conn Server<'table>,
     node_status: Characteristic<Vec<u8, MAX_NODES>>,
     layer_status: Characteristic<[u8; 5]>,
     conn: &'conn GattConnection<'stack, 'server, P>,
     last_node_status: Vec<u8, MAX_NODES>,
-    last_layer_status: [u8; 5],
+    last_layer_status: Option<[u8; 5]>,
 }
 
-impl<'stack, 'server, 'conn, P: PacketPool>
-    BleKeyboardSystemStatusServer<'stack, 'server, 'conn, P>
+impl<'stack, 'server, 'table, 'conn, P: PacketPool>
+    BleKeyboardSystemStatusServer<'stack, 'server, 'table, 'conn, P>
 {
-    pub(crate) fn new(server: &Server, conn: &'conn GattConnection<'stack, 'server, P>) -> Self {
+    pub(crate) fn new(server: &'conn Server<'table>, conn: &'conn GattConnection<'stack, 'server, P>) -> Self {
         let last_node_status = node_status();
         let last_layer_status = layer_status();
 
@@ -324,12 +313,13 @@ impl<'stack, 'server, 'conn, P: PacketPool>
         }
         if let Err(e) = server.set(
             &server.keyboard_system_status_service.layer_status,
-            &last_layer_status,
+            &last_layer_status.unwrap_or(INVALID_LAYER_STATUS),
         ) {
             warn!("Failed to refresh Layer Status: {:?}", e);
         }
 
         Self {
+            server,
             node_status: server.keyboard_system_status_service.node_status.clone(),
             layer_status: server.keyboard_system_status_service.layer_status,
             conn,
@@ -339,11 +329,11 @@ impl<'stack, 'server, 'conn, P: PacketPool>
     }
 }
 
-impl<P: PacketPool> Runnable for BleKeyboardSystemStatusServer<'_, '_, '_, P> {
+impl<P: PacketPool> Runnable for BleKeyboardSystemStatusServer<'_, '_, '_, '_, P> {
     async fn run(&mut self) -> ! {
         loop {
             select(
-                STATUS_CHANGED.wait(),
+                crate::state::wait_battery_state_changed(),
                 crate::state::wait_layer_state_changed(),
             )
             .await;
@@ -362,12 +352,12 @@ impl<P: PacketPool> Runnable for BleKeyboardSystemStatusServer<'_, '_, '_, P> {
 
             let next_layer_status = layer_status();
             if next_layer_status != self.last_layer_status {
-                if let Err(e) = self
-                    .layer_status
-                    .notify(self.conn, &next_layer_status, true)
-                    .await
-                {
-                    warn!("Failed to update Layer Status: {:?}", e);
+                if let Some(value) = next_layer_status {
+                    if let Err(e) = self.layer_status.notify(self.conn, &value, true).await {
+                        warn!("Failed to update Layer Status: {:?}", e);
+                    }
+                } else if let Err(e) = self.server.set(&self.layer_status, &INVALID_LAYER_STATUS) {
+                    warn!("Failed to invalidate Layer Status: {:?}", e);
                 }
                 self.last_layer_status = next_layer_status;
             }
@@ -434,17 +424,37 @@ mod tests {
 
         assert_eq!(
             encode_layer_status(crate::state::LayerStateSnapshot::from_keymap(3, &layers)),
-            [3, 0x0a, 0x00, 0x02, 0x00]
+            Some([3, 0x0a, 0x00, 0x02, 0x00])
         );
     }
 
     #[test]
-    #[should_panic(expected = "supports at most 32 layers")]
-    fn layer_wire_format_rejects_more_than_v1_can_represent() {
-        encode_layer_status(crate::state::LayerStateSnapshot::from_keymap(
-            0,
-            &[false; 33],
-        ));
+    fn layer_wire_format_truncates_to_first_32_layers() {
+        let mut layers = [false; 257];
+        layers[1] = true;
+        layers[31] = true;
+        layers[32] = true;
+        layers[256] = true;
+
+        for count in [33, 256, 257] {
+            let snapshot = crate::state::LayerStateSnapshot::from_keymap(0, &layers[..count]);
+            assert_eq!(encode_layer_status(snapshot), Some([0, 0x03, 0x00, 0x00, 0x80]));
+        }
+    }
+
+    #[test]
+    fn high_default_layer_is_unavailable_without_panicking() {
+        let snapshot = crate::state::LayerStateSnapshot::from_keymap(32, &[false; 33]);
+        assert_eq!(encode_layer_status(snapshot), None);
+    }
+
+    #[test]
+    fn empty_or_invalid_keymap_layer_status_is_unavailable() {
+        assert_eq!(encode_layer_status(crate::state::LayerStateSnapshot::from_keymap(0, &[])), None);
+        assert_eq!(
+            encode_layer_status(crate::state::LayerStateSnapshot::from_keymap(2, &[false, false])),
+            None
+        );
     }
 
     #[test]
