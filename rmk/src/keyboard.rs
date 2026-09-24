@@ -1560,7 +1560,11 @@ impl<'a> Keyboard<'a> {
             }
             KeyboardAction::ComboOn => self.combo_on = true,
             KeyboardAction::ComboOff => self.combo_on = false,
-            KeyboardAction::ComboToggle => self.combo_on = !self.combo_on,
+            KeyboardAction::ComboToggle => {
+                if event.pressed {
+                    self.combo_on = !self.combo_on;
+                }
+            }
             KeyboardAction::Bootloader => {
                 // When releasing the key, process the boot action
                 if !event.pressed {
