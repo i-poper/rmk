@@ -1,0 +1,29 @@
+[layout]
+rows = 1
+cols = 3
+map = "(0,0) (0,1) (0,2)"
+
+[[keymap.layer]]
+keys = "LCtrl MACRO(0) MouseBtn1"
+
+[[test]]
+name = "text_macro_restores_held_ctrl_before_mouse_click"
+behavior.macro = { macros = [{ operations = [{ operation = "text", text = "a" }] }] }
+steps = [
+  { press = [0, 0] },
+  { tap = { pos = [0, 1], duration = 100 } },
+  { press = [0, 2] },
+  { release = [0, 2] },
+  { release = [0, 0] },
+]
+expect = [["LCtrl"], ["A"], [], ["LCtrl"], { mouse = { buttons = 1 } }, { mouse = {} }, []]
+
+[[test]]
+name = "uppercase_text_macro_restores_ctrl_without_shift"
+behavior.macro = { macros = [{ operations = [{ operation = "text", text = "A" }] }] }
+steps = [
+  { press = [0, 0] },
+  { tap = { pos = [0, 1], duration = 100 } },
+  { release = [0, 0] },
+]
+expect = [["LCtrl"], ["LShift"], ["LShift", "A"], ["LShift"], [], ["LCtrl"], []]
