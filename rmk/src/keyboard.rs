@@ -1874,9 +1874,9 @@ impl<'a> Keyboard<'a> {
                     }
                     MacroOperation::End => {
                         if self.macro_texting {
-                            //restore the state of the keyboard (held modifiers, etc.) after text typing
-                            self.send_keyboard_report_with_resolved_modifiers(false).await;
+                            // Restore held modifiers after text typing stops suppressing them.
                             self.macro_texting = false;
+                            self.send_keyboard_report_with_resolved_modifiers(false).await;
                         }
                         break;
                     }
