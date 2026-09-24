@@ -65,6 +65,21 @@ const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
 /// Max number of L2CAP channels
 const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + att + smp + hid
 
+// Custom messages share the GATT write dispatcher with the host protocol.
+const GATT_WRITE_BUFFER_SIZE: usize = {
+    #[cfg(feature = "host")]
+    let size = HOST_WRITE_BUFFER_SIZE;
+    #[cfg(not(feature = "host"))]
+    let size = 32;
+    #[cfg(all(feature = "dongle", feature = "custom_message"))]
+    let size = {
+        let custom =
+            <crate::custom_message::CustomMessage as postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
+        if custom > size { custom } else { size }
+    };
+    size
+};
+
 /// BLE transport. Owns the whole BLE stack.
 ///
 /// On a split build the transport is the BLE split central:
@@ -515,11 +530,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
 
                         // trouble-host 0.7 exposes written bytes via a closure; copy them out
                         // once so the dispatch below (which awaits) can use them freely.
-                        // Sized for the active host protocol's largest BLE write.
-                        #[cfg(feature = "host")]
-                        let mut data_buf = [0u8; HOST_WRITE_BUFFER_SIZE];
-                        #[cfg(not(feature = "host"))]
-                        let mut data_buf = [0u8; 32];
+                        let mut data_buf = [0u8; GATT_WRITE_BUFFER_SIZE];
                         let data_len = event.with_data(|_, data| {
                             let n = data.len().min(data_buf.len());
                             data_buf[..n].copy_from_slice(&data[..n]);
@@ -976,6 +987,33 @@ mod tests {
     use crate::event::{Axis, AxisEvent, AxisValType, KeyboardEvent, PointingEvent, SubscribableEvent, publish_event};
     use crate::state::{current_ble_status, set_ble_profile, set_ble_state};
     use crate::test_support::test_block_on as block_on;
+
+    #[cfg(all(feature = "dongle", feature = "custom_message"))]
+    #[test]
+    fn custom_messages_survive_gatt_write_staging() {
+        use postcard::experimental::max_size::MaxSize;
+
+        use crate::custom_message::{CustomMessage, CustomMessageTarget};
+
+        for target in [CustomMessageTarget::Central, CustomMessageTarget::Peripherals] {
+            for len in [0, 30, 31, crate::CUSTOM_MESSAGE_MAX_SIZE]
+                .into_iter()
+                .filter(|len| *len <= crate::CUSTOM_MESSAGE_MAX_SIZE)
+            {
+                let payload = vec![0xA5; len];
+                let message = CustomMessage::new(&payload, target).unwrap();
+                let mut wire = [0; CustomMessage::POSTCARD_MAX_SIZE];
+                let encoded = postcard::to_slice(&message, &mut wire).unwrap();
+                let mut staged = [0; super::GATT_WRITE_BUFFER_SIZE];
+                let copied = encoded.len().min(staged.len());
+                staged[..copied].copy_from_slice(&encoded[..copied]);
+                let decoded = postcard::from_bytes::<CustomMessage>(&staged[..copied])
+                    .expect("a valid custom message must survive GATT write staging");
+                assert_eq!(decoded.data.as_slice(), payload);
+                assert_eq!(decoded.target, target);
+            }
+        }
+    }
 
     fn ble_status_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
