@@ -11,6 +11,8 @@ use super::device_info::DeviceConfigurationService;
 use crate::dongle::event::{CUSTOM_TO_DONGLE_UUID, CUSTOM_TO_KEYBOARD_UUID};
 #[cfg(feature = "dongle")]
 use crate::dongle::event::{DONGLE_EVENT_CHAR_UUID, DONGLE_EVENT_MAX, DONGLE_EVENT_SERVICE_UUID};
+#[cfg(feature = "keyboard_system_status")]
+use super::keyboard_system_status::KeyboardSystemStatusService;
 #[cfg(feature = "rynk")]
 use crate::hid::RynkHidReport;
 #[cfg(feature = "vial")]
@@ -43,6 +45,8 @@ pub(crate) struct Server {
     pub(crate) device_config_service: DeviceConfigurationService,
     #[cfg(feature = "dongle")]
     pub(crate) dongle_event_service: DongleEventService,
+    #[cfg(feature = "keyboard_system_status")]
+    pub(crate) keyboard_system_status_service: KeyboardSystemStatusService,
 }
 
 /// One postcard-encoded [`crate::dongle::event::DongleEvent`] per notification.

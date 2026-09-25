@@ -9,6 +9,21 @@ use rmk_types::connection::{ConnectionStatus, ConnectionType, UsbState};
 use crate::RawMutex;
 use crate::event::{ConnectionStatusChangeEvent, publish_event};
 
+#[cfg(feature = "battery_state")]
+mod battery;
+#[cfg(feature = "layer_state")]
+mod layer;
+#[cfg(feature = "battery_state")]
+pub(crate) use battery::notify_battery_state_changed;
+#[cfg(feature = "keyboard_system_status")]
+pub(crate) use battery::wait_battery_state_changed;
+#[cfg(feature = "layer_state")]
+pub(crate) use layer::update_layer_state;
+#[cfg(feature = "keyboard_system_status")]
+pub(crate) use layer::wait_layer_state_changed;
+#[cfg(feature = "layer_state")]
+pub use layer::{LayerStateSnapshot, MAX_LAYER_STATE_LAYERS, current_layer_state};
+
 /// Single source of truth for transport state and routing. All writes go
 /// through the mutator helpers below so the active-output cascade runs and
 /// change events fire on every transition.

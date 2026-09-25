@@ -126,6 +126,17 @@ dfu_lock = ["host_lock", "rmk-types/dfu_lock"]
 ## Enable lock feature, physical key presses are required to unlock the keyboard.
 host_lock = []
 
+## Enable the vendor-specific Keyboard System Status Service.
+## Node roles and battery sources are supplied by the keyboard application.
+keyboard_system_status = ["_ble", "layer_state", "battery_state"]
+
+## Expose a protocol-independent snapshot of the default and active layers.
+layer_state = []
+
+## Expose a protocol-independent battery/connectivity change signal and
+## per-connection freshness for split peripheral battery reports.
+battery_state = []
+
 ## **Experimental.** Enable Rynk protocol support (RMK-native protocol, mutually exclusive with
 ## vial).
 rynk = ["host", "host_lock", "rmk-types/rynk"]

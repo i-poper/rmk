@@ -47,6 +47,8 @@ pub(crate) trait SplitWriter {
 struct PeripheralSlot {
     connected: bool,
     battery: BatteryStatus,
+    #[cfg(feature = "battery_state")]
+    battery_reported_current_connection: bool,
 }
 
 static PERIPHERAL_SLOTS: BlockingMutex<crate::RawMutex, Cell<[PeripheralSlot; crate::SPLIT_PERIPHERALS_NUM]>> =
@@ -54,6 +56,8 @@ static PERIPHERAL_SLOTS: BlockingMutex<crate::RawMutex, Cell<[PeripheralSlot; cr
         [PeripheralSlot {
             connected: false,
             battery: BatteryStatus::Unavailable,
+            #[cfg(feature = "battery_state")]
+            battery_reported_current_connection: false,
         }; crate::SPLIT_PERIPHERALS_NUM],
     ));
 
@@ -77,7 +81,17 @@ fn update_slot(id: usize, f: impl FnOnce(&mut PeripheralSlot)) -> bool {
 
 /// Latch peripheral `id`'s connected state and broadcast the change.
 pub(crate) fn set_peripheral_connected(id: usize, connected: bool) {
-    if update_slot(id, |s| s.connected = connected) {
+    if update_slot(id, |s| {
+        #[cfg(feature = "battery_state")]
+        if s.connected != connected {
+            // Keep the last reported value for existing consumers, but do not
+            // treat it as a report from the next split connection.
+            s.battery_reported_current_connection = false;
+        }
+        s.connected = connected;
+    }) {
+        #[cfg(feature = "battery_state")]
+        crate::state::notify_battery_state_changed();
         publish_event(PeripheralConnectedEvent { id, connected });
     }
 }
@@ -85,11 +99,24 @@ pub(crate) fn set_peripheral_connected(id: usize, connected: bool) {
 /// Latch peripheral `id`'s battery status and broadcast the change.
 #[cfg(feature = "_ble")]
 pub(crate) fn set_peripheral_battery(id: usize, battery: BatteryStatus) {
-    if update_slot(id, |s| s.battery = battery) {
-        publish_event(PeripheralBatteryEvent {
-            id,
-            state: BatteryStatusEvent(battery),
-        });
+    let mut battery_changed = false;
+    if update_slot(id, |s| {
+        battery_changed = s.battery != battery;
+        s.battery = battery;
+        #[cfg(feature = "battery_state")]
+        if s.connected {
+            s.battery_reported_current_connection = true;
+        }
+    }) {
+        #[cfg(feature = "battery_state")]
+        crate::state::notify_battery_state_changed();
+        // Freshness alone must not create an extra event for existing consumers.
+        if battery_changed {
+            publish_event(PeripheralBatteryEvent {
+                id,
+                state: BatteryStatusEvent(battery),
+            });
+        }
     }
 }
 
@@ -97,6 +124,21 @@ pub(crate) fn set_peripheral_battery(id: usize, battery: BatteryStatus) {
 #[cfg(feature = "_ble")]
 pub(crate) fn current_peripheral_battery_status(id: usize) -> Option<BatteryStatus> {
     PERIPHERAL_SLOTS.lock(|slots| slots.get().get(id).map(|slot| slot.battery))
+}
+
+/// Battery status reported during the current connection to a peripheral.
+///
+/// Unlike `current_peripheral_battery_status`, this never exposes a prior
+/// connection's value while a newly connected peripheral awaits its first report.
+#[cfg(all(feature = "_ble", feature = "battery_state"))]
+pub(crate) fn current_connected_peripheral_battery_status(id: usize) -> Option<BatteryStatus> {
+    PERIPHERAL_SLOTS.lock(|slots| {
+        slots
+            .get()
+            .get(id)
+            .filter(|slot| slot.connected && slot.battery_reported_current_connection)
+            .map(|slot| slot.battery)
+    })
 }
 
 /// Latest snapshot for peripheral `id`, or `None` when `id` is out of range.
@@ -112,12 +154,20 @@ pub(crate) fn current_peripheral_status(id: usize) -> Option<PeripheralStatus> {
 
 #[cfg(all(test, feature = "_ble"))]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use rmk_types::battery::ChargeState;
 
     use super::{current_peripheral_battery_status, set_peripheral_battery};
 
+    fn slot_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     #[test]
     fn caches_latest_peripheral_battery_status() {
+        let _guard = slot_test_lock().lock().unwrap();
         let status = rmk_types::battery::BatteryStatus::Available {
             charge_state: ChargeState::Discharging,
             level: Some(73),
@@ -127,6 +177,35 @@ mod tests {
 
         assert_eq!(current_peripheral_battery_status(0), Some(status));
         assert_eq!(current_peripheral_battery_status(crate::SPLIT_PERIPHERALS_NUM), None);
+    }
+
+    #[cfg(feature = "battery_state")]
+    #[test]
+    fn current_connection_requires_a_fresh_report_without_clearing_last_value() {
+        use super::{current_connected_peripheral_battery_status, set_peripheral_connected};
+
+        let _guard = slot_test_lock().lock().unwrap();
+        let status = rmk_types::battery::BatteryStatus::Available {
+            charge_state: ChargeState::Discharging,
+            level: Some(73),
+        };
+
+        set_peripheral_connected(0, false);
+        set_peripheral_battery(0, status);
+        assert_eq!(current_peripheral_battery_status(0), Some(status));
+        assert_eq!(current_connected_peripheral_battery_status(0), None);
+
+        set_peripheral_connected(0, true);
+        assert_eq!(current_connected_peripheral_battery_status(0), None);
+        // The first report may have the same numeric value as last session.
+        set_peripheral_battery(0, status);
+        assert_eq!(current_connected_peripheral_battery_status(0), Some(status));
+
+        set_peripheral_connected(0, false);
+        assert_eq!(current_peripheral_battery_status(0), Some(status));
+        assert_eq!(current_connected_peripheral_battery_status(0), None);
+        set_peripheral_connected(0, true);
+        assert_eq!(current_connected_peripheral_battery_status(0), None);
     }
 }
 

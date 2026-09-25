@@ -136,6 +136,11 @@ impl KeyMapInner<'_> {
 }
 
 impl KeyMapInner<'_> {
+    #[cfg(feature = "layer_state")]
+    fn update_layer_state_snapshot(&self) {
+        crate::state::update_layer_state(self.behavior.default_layer, self.layer_state);
+    }
+
     fn get_keymap_config(&self) -> (usize, usize, usize) {
         (self.row, self.col, self.num_layer)
     }
@@ -154,6 +159,8 @@ impl KeyMapInner<'_> {
         }
         let before = self.get_activated_layer();
         self.behavior.default_layer = layer_num;
+        #[cfg(feature = "layer_state")]
+        self.update_layer_state_snapshot();
         let after = self.get_activated_layer();
         // With no layer key held, the activated layer follows the default; a
         // held layer masks the change and observers see nothing.
@@ -300,6 +307,8 @@ impl KeyMapInner<'_> {
     fn update_fn_layer_state(&mut self) {
         if self.num_layer > 3 {
             self.layer_state[3] = self.layer_state[1] && self.layer_state[2];
+            #[cfg(feature = "layer_state")]
+            self.update_layer_state_snapshot();
             let layer = self.get_activated_layer();
             publish_event(LayerChangeEvent::new(layer));
         }
@@ -310,6 +319,8 @@ impl KeyMapInner<'_> {
             self.layer_state[tri_layer[2] as usize] =
                 self.layer_state[tri_layer[0] as usize] && self.layer_state[tri_layer[1] as usize];
         }
+        #[cfg(feature = "layer_state")]
+        self.update_layer_state_snapshot();
         let layer = self.get_activated_layer();
         publish_event(LayerChangeEvent::new(layer));
     }
@@ -373,6 +384,9 @@ impl<'a> KeyMap<'a> {
         let layer_cache = data.layer_cache.as_mut_slice().as_flattened_mut();
         let encoder_layer_cache = data.encoder_layer_cache.as_mut_slice().as_flattened_mut();
         let hand = positional_config.hand.as_slice().as_flattened();
+
+        #[cfg(feature = "layer_state")]
+        crate::state::update_layer_state(behavior.default_layer, layer_state);
 
         KeyMap {
             inner: RefCell::new(KeyMapInner {
